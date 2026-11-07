@@ -20,7 +20,7 @@ Output lines look like `MODIFIED  conf/app.ini`; the labels are `ADDED`, `REMOVE
 `update` prints what changed and then accepts the current state as the new baseline, so a legitimate change
 does not keep alerting. Baselines are written atomically.
 
-Exit codes: Exit codes: `0` no changes,
+Exit codes: `0` no changes,
 `1` changes detected, `2` error (bad directory or unreadable baseline).
 
 Notes:
