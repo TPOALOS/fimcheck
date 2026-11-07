@@ -13,7 +13,7 @@ import os
 import stat
 import sys
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def sha256_file(path):
@@ -31,7 +31,7 @@ def excluded(rel, patterns):
 
 
 def snapshot(root, exclude=()):
-    """Return {relative_path: {sha256, mode}} for regular files under root.
+    """Return {relative_path: {sha256, mode, uid, gid}} for regular files under root.
 
     Symlinks are not followed and are not recorded.
     """
@@ -49,7 +49,8 @@ def snapshot(root, exclude=()):
                 st = os.stat(full)
                 if not stat.S_ISREG(st.st_mode):
                     continue
-                snap[rel] = {"sha256": sha256_file(full), "mode": stat.S_IMODE(st.st_mode)}
+                snap[rel] = {"sha256": sha256_file(full), "mode": stat.S_IMODE(st.st_mode),
+                             "uid": getattr(st, "st_uid", None), "gid": getattr(st, "st_gid", None)}
             except OSError:
                 continue
     return snap
@@ -59,30 +60,46 @@ def diff(old, new):
     """Compare two snapshots; return dict of sorted lists."""
     added = sorted(set(new) - set(old))
     removed = sorted(set(old) - set(new))
-    modified, mode_changed = [], []
+    modified, mode_changed, owner_changed = [], [], []
     for p in sorted(set(old) & set(new)):
         if old[p]["sha256"] != new[p]["sha256"]:
             modified.append(p)
-        elif old[p]["mode"] != new[p]["mode"]:
+            continue
+        if old[p]["mode"] != new[p]["mode"]:
             mode_changed.append(p)
+        # baselines written by 1.0 carry no owner, so compare only when both sides have it
+        if old[p].get("uid") is not None and new[p].get("uid") is not None and \
+                (old[p]["uid"], old[p].get("gid")) != (new[p]["uid"], new[p].get("gid")):
+            owner_changed.append(p)
     return {"added": added, "removed": removed, "modified": modified,
-            "mode_changed": mode_changed}
+            "mode_changed": mode_changed, "owner_changed": owner_changed}
 
 
 def has_changes(d):
     return any(d.values())
 
 
+def write_baseline(path, snap):
+    """Write atomically so an interrupted run cannot leave a half-written baseline."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"version": 2, "files": snap}, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="File integrity monitor (SHA-256 baseline).")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, helptext in (("init", "create a baseline"), ("check", "compare against a baseline")):
+    for name, helptext in (("init", "create a baseline"), ("check", "compare against a baseline"),
+                           ("update", "accept the current state as the new baseline (prints what changed)")):
         sp = sub.add_parser(name, help=helptext)
         sp.add_argument("directory")
         sp.add_argument("-b", "--baseline", default="fim-baseline.json")
         sp.add_argument("-x", "--exclude", action="append", default=[],
                         help="glob pattern to skip (repeatable)")
+        if name != "init":
+            sp.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args(argv)
 
     if not os.path.isdir(args.directory):
@@ -95,8 +112,7 @@ def main(argv=None):
     snap = snapshot(args.directory, exclude)
 
     if args.cmd == "init":
-        with open(args.baseline, "w") as fh:
-            json.dump({"version": 1, "files": snap}, fh, indent=2, sort_keys=True)
+        write_baseline(args.baseline, snap)
         print("fimcheck: baseline of %d file(s) written to %s" % (len(snap), args.baseline))
         return 0
 
@@ -107,13 +123,20 @@ def main(argv=None):
         print("fimcheck: cannot read baseline: %s" % exc, file=sys.stderr)
         return 2
     d = diff(old, snap)
-    for label in ("added", "removed", "modified", "mode_changed"):
-        for p in d[label]:
-            print("%-12s %s" % (label.upper(), p))
+    if args.json:
+        print(json.dumps({"changes": d, "ok": not has_changes(d)}, indent=2))
+    else:
+        for label in ("added", "removed", "modified", "mode_changed", "owner_changed"):
+            for p in d[label]:
+                print("%-13s %s" % (label.upper(), p))
+    if args.cmd == "update":
+        write_baseline(args.baseline, snap)
+        print("fimcheck: baseline updated (%d file(s), %d change(s) accepted)" % (
+            len(snap), sum(len(v) for v in d.values())), file=sys.stderr)
+        return 0
     print("fimcheck: %s" % ("changes detected" if has_changes(d) else "no changes"),
           file=sys.stderr)
     return 1 if has_changes(d) else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

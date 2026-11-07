@@ -10,9 +10,17 @@ Standard library only; read-only on the monitored directory.
 python3 fimcheck.py init /etc/myapp -b baseline.json
 python3 fimcheck.py check /etc/myapp -b baseline.json
 python3 fimcheck.py check /srv/site -b baseline.json -x node_modules -x "*.log"
+python3 fimcheck.py check /etc/myapp -b baseline.json --json      # machine-readable
+python3 fimcheck.py update /etc/myapp -b baseline.json            # after you reviewed the changes
+# or: pip install git+https://github.com/TPOALOS/fimcheck && fimcheck check ...
 ```
 
-Output lines look like `MODIFIED  conf/app.ini`. Exit codes: `0` no changes,
+Output lines look like `MODIFIED  conf/app.ini`; the labels are `ADDED`, `REMOVED`, `MODIFIED`, `MODE_CHANGED` and
+`OWNER_CHANGED` (uid/gid, recorded since 1.1; baselines from 1.0 are still readable and never raise owner alarms).
+`update` prints what changed and then accepts the current state as the new baseline, so a legitimate change
+does not keep alerting. Baselines are written atomically.
+
+Exit codes: Exit codes: `0` no changes,
 `1` changes detected, `2` error (bad directory or unreadable baseline).
 
 Notes:
